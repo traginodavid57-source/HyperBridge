@@ -149,7 +149,7 @@ object WidgetManager {
      * Guaranteed to execute on the Main thread to avoid CalledFromWrongThreadException.
      */
     private fun cleanupHostView(view: AppWidgetHostView) {
-        val action = {
+        val action = Runnable {
             try {
                 view.setOnClickListener(null)
                 (view.parent as? ViewGroup)?.removeView(view)
@@ -158,7 +158,7 @@ object WidgetManager {
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            action()
+            action.run()
         } else {
             Handler(Looper.getMainLooper()).post(action)
         }
