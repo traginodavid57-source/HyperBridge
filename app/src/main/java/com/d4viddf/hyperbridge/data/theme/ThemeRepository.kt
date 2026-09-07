@@ -11,6 +11,7 @@ import com.d4viddf.hyperbridge.models.theme.AppThemeOverride
 import com.d4viddf.hyperbridge.models.theme.HyperTheme
 import com.d4viddf.hyperbridge.models.theme.ResourceType
 import com.d4viddf.hyperbridge.models.theme.ThemeResource
+import com.d4viddf.hyperbridge.util.downscaleSafe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -180,11 +181,16 @@ class ThemeRepository(private val context: Context) {
         val themeId = _activeTheme.value?.id ?: return null
 
         return try {
-            when (resource.type) {
+            val rawBitmap = when (resource.type) {
                 ResourceType.LOCAL_FILE -> {
                     val themeFolder = File(themesDir, themeId)
                     val file = File(themeFolder, resource.value)
-                    if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
+                    if (file.exists()) {
+                        // Use inSampleSize calculation to prevent loading massive images into memory
+                        decodeFileWithBounds(file.absolutePath, 256)
+                    } else {
+                        null
+                    }
                 }
                 ResourceType.URI_CONTENT -> {
                     val uri = resource.value.toUri()
@@ -194,9 +200,37 @@ class ThemeRepository(private val context: Context) {
                 }
                 ResourceType.PRESET_DRAWABLE -> null
             }
+
+            // Downscale to safe max size (256x256) to prevent Binder TransactionTooLargeException
+            val safeBitmap = rawBitmap?.downscaleSafe(maxDimension = 256, recycleOriginal = true)
+            if (safeBitmap != null) {
+                Log.d(tag, "Loaded theme resource '${resource.value}': ${safeBitmap.width}x${safeBitmap.height}")
+            }
+            safeBitmap
         } catch (e: Exception) {
             Log.w(tag, "Error loading bitmap resource: ${resource.value}", e)
             null
+        }
+    }
+
+    private fun decodeFileWithBounds(path: String, maxDimension: Int): Bitmap? {
+        return try {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, options)
+            val width = options.outWidth
+            val height = options.outHeight
+            if (width <= 0 || height <= 0) return null
+
+            var inSampleSize = 1
+            val maxSide = maxOf(width, height)
+            while (maxSide / (inSampleSize * 2) >= maxDimension) {
+                inSampleSize *= 2
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
+            BitmapFactory.decodeFile(path, decodeOptions)
+        } catch (e: Exception) {
+            BitmapFactory.decodeFile(path)
         }
     }
 

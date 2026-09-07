@@ -25,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 class WidgetOverlayService : Service() {
@@ -36,6 +37,10 @@ class WidgetOverlayService : Service() {
         const val ACTION_START_MONITORING = "ACTION_START_MONITORING"
         const val ACTION_KILL_ALL_WIDGETS = "ACTION_KILL_ALL_WIDGETS"
         const val ACTION_KILL_WIDGET = "ACTION_KILL_WIDGET"
+
+        // Minimum throttle (3000ms) to prevent Binder buffer exhaustion and SystemUI crashes from frequent snapshot redraws
+        const val SNAPSHOT_THROTTLE_MS = 3000L
+        const val INTERACTIVE_THROTTLE_MS = 200L
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
@@ -76,21 +81,29 @@ class WidgetOverlayService : Service() {
                 }
             }
             ACTION_KILL_ALL_WIDGETS -> {
-                // Instantly kill all active widgets
+                // Instantly kill all active widgets and cleanup view/bitmap caches
                 serviceScope.launch(Dispatchers.IO) {
                     val savedIds = preferences.savedWidgetIdsFlow.first()
                     savedIds.forEach { id ->
                         notificationManager.cancel(9000 + id)
                         widgetUpdateDebouncer.remove(id)
                     }
+                    // Must run on Dispatchers.Main to avoid CalledFromWrongThreadException when detaching views
+                    withContext(Dispatchers.Main) {
+                        WidgetManager.cleanupAllWidgets()
+                    }
                 }
             }
             ACTION_KILL_WIDGET -> {
-                // NEW: Instantly kill a specific widget
+                // Instantly kill a specific widget and cleanup view/bitmap caches
                 val widgetId = intent.getIntExtra("WIDGET_ID", -1)
                 if (widgetId != -1) {
                     notificationManager.cancel(9000 + widgetId)
                     widgetUpdateDebouncer.remove(widgetId) // Clean up memory
+                    // Must run on Dispatchers.Main to avoid CalledFromWrongThreadException when detaching views
+                    serviceScope.launch(Dispatchers.Main) {
+                        WidgetManager.cleanupWidget(widgetId)
+                    }
                 }
             }
             ACTION_START_MONITORING -> {
@@ -121,16 +134,17 @@ class WidgetOverlayService : Service() {
     }
 
     /**
-     * Prevents Snapshot widgets from flickering (updates every 1.5s max).
+     * Prevents Snapshot widgets from flickering and oversubscribing Binder buffer (updates every 3s min).
      * Interactive widgets are smoother (200ms).
      */
     private fun shouldProcessWidgetUpdate(widgetId: Int, config: WidgetConfig): Boolean {
         val now = System.currentTimeMillis()
         val lastTime = widgetUpdateDebouncer[widgetId] ?: 0L
 
-        // Snapshot logic often triggers every second (e.g. music seekbar updates),
-        // causing full bitmap redraws which flicker. We slow this down.
-        val throttleTime = if (config.renderMode == WidgetRenderMode.SNAPSHOT) 1500L else 200L
+        // Snapshot mode triggers full view redraws and bitmap transfers over Binder IPC.
+        // A minimum 3s throttle prevents Binder buffer exhaustion and SystemUI crashes
+        // from rapidly updating widgets (e.g., music player seekbars).
+        val throttleTime = if (config.renderMode == WidgetRenderMode.SNAPSHOT) SNAPSHOT_THROTTLE_MS else INTERACTIVE_THROTTLE_MS
 
         if (now - lastTime < throttleTime) {
             return false
@@ -193,6 +207,7 @@ class WidgetOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
+        WidgetManager.cleanupAllWidgets()
         Log.d(TAG, "Widget Overlay Service Destroyed")
     }
 }

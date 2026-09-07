@@ -554,6 +554,10 @@ fun SavedWidgetChildItem(
                     }
                     wrapper
                 },
+                onRelease = { wrapper ->
+                    // Clean up UI preview when leaving composition without affecting background snapshot cache
+                    wrapper.removeAllViews()
+                },
                 modifier = Modifier.padding(16.dp).fillMaxSize()
             )
         }

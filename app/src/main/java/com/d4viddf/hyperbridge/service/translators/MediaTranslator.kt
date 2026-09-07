@@ -12,9 +12,11 @@ import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import androidx.palette.graphics.Palette
 import com.d4viddf.hyperbridge.models.HyperIslandData
 import com.d4viddf.hyperbridge.models.IslandConfig
+import com.d4viddf.hyperbridge.util.downscaleSafe
 import io.github.d4viddf.hyperisland_kit.HyperAction
 import io.github.d4viddf.hyperisland_kit.HyperIslandNotification
 import io.github.d4viddf.hyperisland_kit.HyperPicture
@@ -38,6 +40,7 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
             loadIconBitmap(largeIcon, sbn.packageName)
         } else {
             try {
+                @Suppress("DEPRECATION")
                 extras.getParcelable<Bitmap>(Notification.EXTRA_LARGE_ICON)
             } catch (e: Exception) {
                 null
@@ -46,6 +49,12 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
 
         if (albumArt == null) {
             albumArt = getAppIcon(sbn.packageName)
+        }
+
+        // Downscale album art to a safe maximum size (300x300) BEFORE Palette and rounding
+        // to prevent Binder TransactionTooLargeException (~1MB limit) and save CPU cycles.
+        albumArt = albumArt?.downscaleSafe(maxDimension = 300, recycleOriginal = true)?.also {
+            Log.d("MediaTranslator", "Downscaled album art for ${sbn.packageName}: ${it.width}x${it.height}")
         }
 
         // --- 2. Material Color Extraction ---
@@ -70,8 +79,12 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
                 onContainerBodyHex = toHex(swatch.bodyTextColor)
             }
 
-            // Round the art for the avatar
-            albumArt = getRoundedCornerBitmap(albumArt, 32f)
+            // Round the art for the avatar, recycling pre-rounded bitmap if a new one was allocated
+            val roundedArt = getRoundedCornerBitmap(albumArt, 32f)
+            if (roundedArt !== albumArt && !albumArt.isRecycled) {
+                albumArt.recycle()
+            }
+            albumArt = roundedArt
         }
 
         val builder = HyperIslandNotification.Builder(context, "bridge_${sbn.packageName}", title)
@@ -84,16 +97,11 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
 
 
         // --- RESOURCES ---
-        val artKey = "album_art"
-
+        // Register picture ONCE under picKey to eliminate redundant duplicate payload in Bundle
         if (albumArt != null) {
-            builder.addPicture(HyperPicture(artKey, albumArt))
             builder.addPicture(HyperPicture(picKey, albumArt))
         } else {
             builder.addPicture(resolveIcon(sbn, picKey))
-            val appIcon = getAppIcon(sbn.packageName) ?: createFallbackBitmap()
-            val roundedAppIcon = getRoundedCornerBitmap(appIcon, 32f)
-            builder.addPicture(HyperPicture(artKey, roundedAppIcon))
         }
 
         builder.addPicture(getTransparentPicture("hidden_pixel"))
@@ -133,7 +141,7 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
         builder.setChatInfo(
             title = title,
             content = artist,
-            pictureKey = if (albumArt != null) artKey else picKey,
+            pictureKey = picKey,
             appPkg = sbn.packageName,
             actionKeys = actionKeys,
             titleColor = onContainerTitleHex,    // High Emphasis
@@ -143,12 +151,12 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
         )
 
         // --- Island (Collapsed) ---
-        builder.setSmallIsland(if (albumArt != null) artKey else picKey)
+        builder.setSmallIsland(picKey)
 
         builder.setBigIslandInfo(
             left = ImageTextInfoLeft(
                 type = 1,
-                picInfo = PicInfo(type = 1, pic = if (albumArt != null) artKey else picKey),
+                picInfo = PicInfo(type = 1, pic = picKey),
                 textInfo = TextInfo(title = "", content = "")
             )
         )
@@ -190,7 +198,7 @@ class MediaTranslator(context: Context) : BaseTranslator(context) {
     private fun getAppIcon(pkg: String): Bitmap? {
         return try {
             val drawable = context.packageManager.getApplicationIcon(pkg)
-            drawableToBitmap(drawable)
+            drawableToBitmap(drawable).downscaleSafe(300, recycleOriginal = true)
         } catch (e: Exception) {
             null
         }

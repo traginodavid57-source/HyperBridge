@@ -2,6 +2,7 @@ package com.d4viddf.hyperbridge.ui.screens.theme
 
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.d4viddf.hyperbridge.util.downscaleSafe
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -551,7 +552,8 @@ fun ThemeMetadataSheet(viewModel: ThemeViewModel, onDismiss: () -> Unit) {
                 try {
                     context.contentResolver.openInputStream(viewModel.themeIconUri!!)?.use { stream ->
                         val bmp = BitmapFactory.decodeStream(stream)
-                        iconBitmap = bmp?.asImageBitmap()
+                        val safeBmp = bmp?.downscaleSafe(maxDimension = 256, recycleOriginal = true)
+                        iconBitmap = safeBmp?.asImageBitmap()
                     }
                 } catch (e: Exception) { e.printStackTrace(); iconBitmap = null }
             }

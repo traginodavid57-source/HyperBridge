@@ -9,6 +9,7 @@ import com.d4viddf.hyperbridge.IPrivilegedService
 import com.d4viddf.hyperbridge.IPrivilegedLogCallback
 import android.util.Log
 import rikka.shizuku.Shizuku
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
@@ -23,6 +24,7 @@ object ShizukuUserServiceRecycler {
 
     private val serviceMutex = Mutex()
     private var cachedService: IPrivilegedService? = null
+    private var pendingConnection: CompletableDeferred<IPrivilegedService>? = null
     private var serviceConnection: ServiceConnection? = null
     private var serviceArgs: Shizuku.UserServiceArgs? = null
     private var lastPingAttempt = 0L
@@ -50,9 +52,12 @@ object ShizukuUserServiceRecycler {
      * Gets or creates a persistent connection to the privileged service.
      * Uses caching to avoid repeated bind/unbind cycles.
      * Only validates connection periodically to minimize Binder calls and avoid throttling.
+     *
+     * Resolves pending binds via [CompletableDeferred] so concurrent callers do not
+     * block behind [serviceMutex] for up to 10s while [establishServiceConnection] runs.
      */
     suspend fun getPrivilegedService(): IPrivilegedService {
-        serviceMutex.withLock {
+        val (deferred, isInitiator) = serviceMutex.withLock {
             cachedService?.let { cached ->
                 val now = System.currentTimeMillis()
                 // Only ping periodically, not on every call, to avoid Binder overhead
@@ -76,12 +81,43 @@ object ShizukuUserServiceRecycler {
                 }
             }
 
-            // Need to establish new connection
-            Log.d(TAG, "Establishing new service connection...")
-            return establishServiceConnection().also {
-                lastPingAttempt = System.currentTimeMillis()
+            // If a bind is already in progress, join it instead of blocking the mutex for 10s
+            val inProgress = pendingConnection
+            if (inProgress != null && !inProgress.isCompleted) {
+                Log.d(TAG, "Binding already in progress, awaiting existing connection attempt...")
+                return@withLock (inProgress to false)
+            }
+
+            // We are the initiator: create a new Deferred and set as pending
+            val newDeferred = CompletableDeferred<IPrivilegedService>()
+            pendingConnection = newDeferred
+            (newDeferred to true)
+        }
+
+        if (!isInitiator) {
+            // Concurrent caller awaits the shared bind without holding serviceMutex
+            return deferred.await()
+        }
+
+        // The initiator binds OUTSIDE serviceMutex so other callers don't block
+        return try {
+            Log.d(TAG, "Establishing new service connection (initiator)...")
+            val service = establishServiceConnection().also {
                 Log.d(TAG, "Service connection established successfully")
             }
+            serviceMutex.withLock {
+                cachedService = service
+                lastPingAttempt = System.currentTimeMillis()
+                pendingConnection = null
+            }
+            deferred.complete(service)
+            service
+        } catch (e: Exception) {
+            serviceMutex.withLock {
+                pendingConnection = null
+            }
+            deferred.completeExceptionally(e)
+            throw e
         }
     }
 

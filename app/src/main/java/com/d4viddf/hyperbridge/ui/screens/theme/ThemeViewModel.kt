@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -39,6 +40,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import androidx.core.graphics.scale
+import com.d4viddf.hyperbridge.util.downscaleSafe
 
 class ThemeViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -488,8 +490,13 @@ class ThemeViewModel(application: Application) : AndroidViewModel(application) {
                             context.contentResolver.openInputStream(uri)?.use { input ->
                                 val bitmap = BitmapFactory.decodeStream(input)
                                 if (bitmap != null) {
-                                    File(iconsDir, "$key.png").outputStream().use {
-                                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+                                    val scaledBitmap = bitmap.downscaleSafe(maxDimension = 512, recycleOriginal = true)
+                                    File(iconsDir, "$key.png").outputStream().use { out ->
+                                        scaledBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                                    }
+                                    Log.d("ThemeViewModel", "Saved theme action asset '$key': ${scaledBitmap.width}x${scaledBitmap.height}")
+                                    if (bitmap !== scaledBitmap && !bitmap.isRecycled) {
+                                        bitmap.recycle()
                                     }
                                 }
                             }

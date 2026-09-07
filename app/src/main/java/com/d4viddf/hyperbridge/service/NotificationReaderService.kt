@@ -59,6 +59,10 @@ class NotificationReaderService : NotificationListenerService() {
     companion object {
         const val ACTION_RELOAD_THEME = "com.d4viddf.hyperbridge.ACTION_RELOAD_THEME"
         const val ACTION_PERFORM_MIGRATION = "com.d4viddf.hyperbridge.ACTION_PERFORM_MIGRATION"
+
+        // Minimum throttle (3000ms) to prevent Binder buffer exhaustion and SystemUI crashes from frequent snapshot redraws
+        const val SNAPSHOT_THROTTLE_MS = 3000L
+        const val INTERACTIVE_THROTTLE_MS = 200L
     }
 
     private val TAG = "HyperBridgeDebug"
@@ -414,6 +418,7 @@ class NotificationReaderService : NotificationListenerService() {
                     dismissedWidgetIds.add(widgetId)
                     activeWidgets.remove(widgetId)
                     updatePermanentIsland()
+                    WidgetManager.cleanupWidget(widgetId)
                     return
                 }
 
@@ -1120,7 +1125,10 @@ class NotificationReaderService : NotificationListenerService() {
     private fun shouldProcessWidgetUpdate(widgetId: Int, config: WidgetConfig): Boolean {
         val now = System.currentTimeMillis()
         val lastTime = widgetUpdateDebouncer[widgetId] ?: 0L
-        val throttleTime = if (config.renderMode == WidgetRenderMode.SNAPSHOT) 1500L else 200L
+        // Snapshot mode triggers full view redraws and bitmap transfers over Binder IPC.
+        // A minimum 3s throttle prevents Binder buffer exhaustion and SystemUI crashes
+        // from rapidly updating widgets (e.g., music player seekbars).
+        val throttleTime = if (config.renderMode == WidgetRenderMode.SNAPSHOT) SNAPSHOT_THROTTLE_MS else INTERACTIVE_THROTTLE_MS
         if (now - lastTime < throttleTime) return false
         widgetUpdateDebouncer[widgetId] = now
         return true
@@ -1375,6 +1383,7 @@ class NotificationReaderService : NotificationListenerService() {
         unregisterReceiver(systemReceiver)
         unregisterReceiver(islandClickReceiver)
         syncJob?.cancel()
-        serviceScope.cancel() 
+        serviceScope.cancel()
+        WidgetManager.cleanupAllWidgets()
     }
 }

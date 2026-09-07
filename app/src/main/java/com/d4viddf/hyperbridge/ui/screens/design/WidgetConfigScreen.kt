@@ -294,6 +294,10 @@ fun WidgetConfigScreen(
                                     (hostView as? android.appwidget.AppWidgetHostView)?.updateAppWidgetOptions(options)
                                 }
                             },
+                            onRelease = { wrapper ->
+                                // Clean up UI preview when leaving composition without affecting background snapshot cache
+                                wrapper.removeAllViews()
+                            },
                             modifier = Modifier
                                 .width(previewWidthDp.dp)
                                 .height(

@@ -40,6 +40,7 @@ import io.github.d4viddf.hyperisland_kit.HyperPicture
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import androidx.core.graphics.get
+import com.d4viddf.hyperbridge.util.downscaleSafe
 
 abstract class BaseTranslator(
     protected val context: Context,
@@ -418,8 +419,10 @@ abstract class BaseTranslator(
         val extras = sbn.notification.extras
 
         try {
+            // Downscale bitmaps to safe maximum dimension (max 256x256) to prevent
+            // Binder TransactionTooLargeException (~1MB buffer limit) when passing via IPC to SystemUI.
             val picture = extras.getParcelableCompat<Bitmap>(Notification.EXTRA_PICTURE)
-            if (picture != null) return picture
+            if (picture != null) return picture.downscaleSafe()
 
             val template = extras.getString(Notification.EXTRA_TEMPLATE)
             if (template == "android.app.Notification\$MessagingStyle") {
@@ -430,7 +433,7 @@ abstract class BaseTranslator(
                         val senderPerson = lastMessage.getParcelableCompat<Person>("sender_person")
                         if (senderPerson?.icon != null) {
                             val bitmap = loadIconBitmap(senderPerson.icon!!, pkg)
-                            if (bitmap != null) return bitmap
+                            if (bitmap != null) return bitmap.downscaleSafe()
                         }
                     }
                 }
@@ -442,25 +445,26 @@ abstract class BaseTranslator(
 
                 if (person != null && person.icon != null) {
                     val bitmap = loadIconBitmap(person.icon!!, pkg)
-                    if (bitmap != null) return bitmap
+                    if (bitmap != null) return bitmap.downscaleSafe()
                 }
             }
 
             val largeIcon = sbn.notification.getLargeIcon()
             if (largeIcon != null) {
                 val bitmap = loadIconBitmap(largeIcon, pkg)
-                if (bitmap != null) return bitmap
+                if (bitmap != null) return bitmap.downscaleSafe()
             }
 
             @Suppress("DEPRECATION")
             val largeIconBitmap = extras.getParcelableCompat<Bitmap>(Notification.EXTRA_LARGE_ICON)
-            if (largeIconBitmap != null) return largeIconBitmap
+            if (largeIconBitmap != null) return largeIconBitmap.downscaleSafe()
 
             if (sbn.notification.smallIcon != null) {
                 val bitmap = loadIconBitmap(sbn.notification.smallIcon, pkg)
-                if (bitmap != null) return bitmap
+                if (bitmap != null) return bitmap.downscaleSafe()
             }
 
+            // Fallback: app icon or default fallback
             return getAppIconBitmap(pkg)
 
         } catch (e: Exception) {
